@@ -57,7 +57,9 @@ chmod +x run_pipeline.sh
 2. Prepare Input Files
    
 Create your samplesheet (assets/samplesheet.csv):
+
 csvsample,fastq_1,fastq_2,strandedness
+
 sample1,s3://your-bucket/sample1_R1.fastq.gz,s3://your-bucket/sample1_R2.fastq.gz,unstranded
 sample2,s3://your-bucket/sample2_R1.fastq.gz,s3://your-bucket/sample2_R2.fastq.gz,unstranded
 
