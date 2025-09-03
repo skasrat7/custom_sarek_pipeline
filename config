@@ -1,0 +1,465 @@
+/*
+========================================================================================
+    nextflow.config - Main Configuration File
+========================================================================================
+*/
+
+// nextflow.config
+params {
+    // Default parameters
+    config_profile_description = 'Custom Sarek pipeline with S3 integration'
+    config_profile_contact     = 'your-email@example.com'
+    config_profile_url         = 'https://github.com/your-repo/custom-sarek'
+
+    // Resource defaults
+    max_memory                 = '16.GB'
+    max_cpus                   = 8
+    max_time                   = '240.h'
+}
+
+// AWS S3 Configuration
+aws {
+    region = params.aws_region
+    client {
+        maxConnections = 20
+        connectionTimeout = 300000
+        uploadStorageClass = 'STANDARD_IA'
+        storageEncryption = 'AES256'
+    }
+}
+
+// Process configurations
+process {
+    executor = 'aws'
+    
+    // Default resources
+    cpus   = { check_max( 2, 'cpus' ) }
+    memory = { check_max( 4.GB * task.attempt, 'memory' ) }
+    time   = { check_max( 4.h * task.attempt, 'time' ) }
+
+    errorStrategy = { task.exitStatus in [143,137,104,134,139] ? 'retry' : 'terminate' }
+    maxRetries    = 2
+    maxErrors     = '-1'
+
+    // Process-specific configurations
+    withName: MERGE_BED_FILES {
+        container = 'quay.io/biocontainers/bedtools:2.30.0--hc088bd4_0'
+        cpus      = 1
+        memory    = { check_max( 2.GB * task.attempt, 'memory' ) }
+        time      = { check_max( 1.h * task.attempt, 'time' ) }
+    }
+
+    withName: CALCULATE_SUBSAMPLING {
+        container = 'python:3.9-slim'
+        cpus      = 1
+        memory    = { check_max( 2.GB * task.attempt, 'memory' ) }
+        time      = { check_max( 1.h * task.attempt, 'time' ) }
+    }
+
+    withName: SUBSAMPLE_FASTQ {
+        container = 'quay.io/biocontainers/seqtk:1.3--h7132678_4'
+        cpus      = 2
+        memory    = { check_max( 4.GB * task.attempt, 'memory' ) }
+        time      = { check_max( 2.h * task.attempt, 'time' ) }
+    }
+
+    withName: BWA_MEM {
+        container = 'quay.io/biocontainers/mulled-v2-fe8faa35dbf6dc65a0f7f5d4ea12e31a79f73e40:66ed1b38d280722529bb8a0167b0cf02f8a0b488-0'
+        cpus      = { check_max( 8 * task.attempt, 'cpus' ) }
+        memory    = { check_max( 16.GB * task.attempt, 'memory' ) }
+        time      = { check_max( 4.h * task.attempt, 'time' ) }
+    }
+
+    withName: PICARD_METRICS_SUITE {
+        container = 'quay.io/biocontainers/picard:2.27.4--hdfd78af_0'
+        cpus      = 4
+        memory    = { check_max( 8.GB * task.attempt, 'memory' ) }
+        time      = { check_max( 3.h * task.attempt, 'time' ) }
+    }
+
+    withName: CREATE_PLOTS {
+        container = 'quay.io/biocontainers/mulled-v2-f42a44964bca5225c7860882e231a7b5488b5485:47ef981087c59f79fdbcab4d9d7316e9ac2e688d-0'
+        cpus      = 2
+        memory    = { check_max( 4.GB * task.attempt, 'memory' ) }
+        time      = { check_max( 2.h * task.attempt, 'time' ) }
+    }
+
+    withName: ORGANIZE_OUTPUTS {
+        container = 'ubuntu:20.04'
+        cpus      = 1
+        memory    = { check_max( 2.GB * task.attempt, 'memory' ) }
+        time      = { check_max( 1.h * task.attempt, 'time' ) }
+    }
+}
+
+// Container configurations
+docker {
+    enabled                = true
+    userEmulation          = true
+    runOptions             = '-u $(id -u):$(id -g)'
+}
+
+singularity {
+    enabled                = true
+    autoMounts             = true
+}
+
+// AWS Batch configuration
+aws.batch.cliPath      = '/home/ec2-user/miniconda/bin/aws'
+aws.batch.jobQueue     = 'your-batch-queue'
+aws.batch.jobRole      = 'arn:aws:iam::your-account:role/BatchExecutionRole'
+
+// Profiles
+profiles {
+    debug { process.beforeScript = 'echo $HOSTNAME' }
+    
+    conda {
+        params.enable_conda    = true
+        docker.enabled         = false
+        singularity.enabled    = false
+        podman.enabled         = false
+        shifter.enabled        = false
+        charliecloud.enabled   = false
+    }
+    
+    docker {
+        docker.enabled         = true
+        docker.userEmulation   = true
+        singularity.enabled    = false
+        podman.enabled         = false
+        shifter.enabled        = false
+        charliecloud.enabled   = false
+    }
+
+    singularity {
+        singularity.enabled    = true
+        singularity.autoMounts = true
+        docker.enabled         = false
+        podman.enabled         = false
+        shifter.enabled        = false
+        charliecloud.enabled   = false
+    }
+
+    aws {
+        includeConfig 'conf/aws.config'
+    }
+
+    test {
+        includeConfig 'conf/test.config'
+    }
+}
+
+// Function to check maximum allowed resources
+def check_max(obj, type) {
+    if (type == 'memory') {
+        try {
+            if (obj.compareTo(params.max_memory as nextflow.util.MemoryUnit) == 1)
+                return params.max_memory as nextflow.util.MemoryUnit
+            else
+                return obj
+        } catch (all) {
+            println "   ### ERROR ###   Max memory '${params.max_memory}' is not valid! Using default value: $obj"
+            return obj
+        }
+    } else if (type == 'time') {
+        try {
+            if (obj.compareTo(params.max_time as nextflow.util.Duration) == 1)
+                return params.max_time as nextflow.util.Duration
+            else
+                return obj
+        } catch (all) {
+            println "   ### ERROR ###   Max time '${params.max_time}' is not valid! Using default value: $obj"
+            return obj
+        }
+    } else if (type == 'cpus') {
+        try {
+            return Math.min( obj, params.max_cpus as int )
+        } catch (all) {
+            println "   ### ERROR ###   Max cpus '${params.max_cpus}' is not valid! Using default value: $obj"
+            return obj
+        }
+    }
+}
+
+/*
+========================================================================================
+    AWS-specific Configuration (conf/aws.config)
+========================================================================================
+*/
+
+// conf/aws.config
+process {
+    executor = 'awsbatch'
+    queue = params.aws_queue ?: 'default'
+    
+    // AWS-specific resource configurations
+    withName: '.*' {
+        container = { task.container }
+        disk = '50 GB'
+        
+        // Use spot instances for cost savings
+        spot = true
+        
+        // Set appropriate instance types
+        instanceType = { 
+            if (task.memory && task.memory > 30.GB) 'r5.2xlarge'
+            else if (task.memory && task.memory > 15.GB) 'r5.xlarge' 
+            else if (task.cpus && task.cpus > 4) 'c5.2xlarge'
+            else 'c5.large'
+        }
+    }
+    
+    // Process-specific AWS configurations
+    withName: BWA_MEM {
+        instanceType = 'c5.4xlarge'
+        disk = '100 GB'
+    }
+    
+    withName: PICARD_METRICS_SUITE {
+        instanceType = 'r5.xlarge'
+        disk = '50 GB'
+    }
+}
+
+// AWS S3 work directory
+workDir = 's3://your-nextflow-workdir/work'
+
+// AWS region and credentials
+aws {
+    region = params.aws_region
+    batch {
+        cliPath = '/usr/local/bin/aws'
+        maxParallelTransfers = 4
+        maxTransferAttempts = 3
+        delayBetweenAttempts = '5 sec'
+    }
+}
+
+/*
+========================================================================================
+    Sample Sheet Template (samplesheet.csv)
+========================================================================================
+*/
+
+// samplesheet_template.csv
+/*
+sample_id,fastq_1,fastq_2,panel_bed
+sample001,s3://your-bucket/data/sample001_R1.fastq.gz,s3://your-bucket/data/sample001_R2.fastq.gz,s3://your-bucket/panels/sample001_panel.bed
+sample002,s3://your-bucket/data/sample002_R1.fastq.gz,s3://your-bucket/data/sample002_R2.fastq.gz,s3://your-bucket/panels/sample002_panel.bed
+sample003,s3://your-bucket/data/sample003_R1.fastq.gz,s3://your-bucket/data/sample003_R2.fastq.gz,s3://your-bucket/panels/sample003_panel.bed
+*/
+
+/*
+========================================================================================
+    Test Configuration (conf/test.config)
+========================================================================================
+*/
+
+// conf/test.config
+params {
+    config_profile_name        = 'Test profile'
+    config_profile_description = 'Minimal test dataset to check pipeline function'
+
+    // Limit resources
+    max_cpus   = 2
+    max_memory = '6.GB'
+    max_time   = '6.h'
+
+    // Test data parameters
+    input_samplesheet = 'assets/samplesheet_test.csv'
+    genome            = 'GRCh38'
+    fasta             = 'https://github.com/nf-core/test-datasets/raw/sarek/reference/Homo_sapiens_assembly38.fasta'
+    bed_files         = 'https://github.com/nf-core/test-datasets/raw/sarek/reference/target_regions.bed'
+    target_coverage   = 50  // Lower coverage for testing
+    read_length       = 150
+
+    // Skip time-consuming processes for testing
+    skip_tools = 'baserecalibrator,haplotypecaller'
+}
+
+/*
+========================================================================================
+    Docker Compose for Local Development (docker-compose.yml)
+========================================================================================
+*/
+
+// docker-compose.yml (YAML format)
+/*
+version: '3.8'
+
+services:
+  nextflow:
+    image: nextflow/nextflow:latest
+    volumes:
+      - .:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+    working_dir: /workspace
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+    command: >
+      bash -c "
+        nextflow run main.nf 
+        --input_samplesheet samplesheet.csv
+        --outdir s3://your-output-bucket/results
+        --genome GRCh38
+        --fasta s3://your-reference-bucket/genome.fa
+        --bed_files s3://your-reference-bucket/panel1.bed,s3://your-reference-bucket/panel2.bed
+        -profile docker,aws
+        -resume
+      "
+
+  localstack:
+    image: localstack/localstack:latest
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=s3,batch,ec2
+      - DEBUG=1
+      - DATA_DIR=/tmp/localstack/data
+    volumes:
+      - ./localstack_data:/tmp/localstack/data
+*/
+
+/*
+========================================================================================
+    Environment Setup Script (setup_env.sh)
+========================================================================================
+*/
+
+// setup_env.sh
+/*
+#!/bin/bash
+
+# Environment Setup Script for Custom Sarek Pipeline
+
+set -euo pipefail
+
+echo "Setting up Custom Sarek Pipeline environment..."
+
+# Create necessary directories
+mkdir -p {conf,modules,assets,bin,work}
+
+# Install dependencies if using conda
+if command -v conda &> /dev/null; then
+    echo "Setting up conda environment..."
+    conda env create -f environment.yml -n custom-sarek || true
+    conda activate custom-sarek
+fi
+
+# Set up AWS credentials if not already configured
+if [ ! -f ~/.aws/credentials ]; then
+    echo "AWS credentials not found. Please configure:"
+    echo "aws configure"
+    echo "or set environment variables:"
+    echo "export AWS_ACCESS_KEY_ID=your_key"
+    echo "export AWS_SECRET_ACCESS_KEY=your_secret"
+    echo "export AWS_DEFAULT_REGION=your_region"
+fi
+
+# Validate S3 access
+echo "Testing S3 access..."
+aws s3 ls || {
+    echo "Warning: S3 access test failed. Please check AWS credentials."
+}
+
+# Create example samplesheet
+cat > assets/samplesheet_example.csv << 'EOF'
+sample_id,fastq_1,fastq_2
+sample001,s3://your-bucket/data/sample001_R1.fastq.gz,s3://your-bucket/data/sample001_R2.fastq.gz
+sample002,s3://your-bucket/data/sample002_R1.fastq.gz,s3://your-bucket/data/sample002_R2.fastq.gz
+EOF
+
+echo "Environment setup complete!"
+echo "Edit the samplesheet at assets/samplesheet_example.csv"
+echo "Then run: nextflow run main.nf --input_samplesheet assets/samplesheet_example.csv [other options]"
+*/
+
+/*
+========================================================================================
+    Conda Environment File (environment.yml)
+========================================================================================
+*/
+
+// environment.yml (YAML format)
+/*
+name: custom-sarek
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+
+dependencies:
+  - python=3.9
+  - nextflow>=21.10.0
+  - aws-cli
+  - bwa=0.7.17
+  - samtools=1.15
+  - picard=2.27.4
+  - bedtools=2.30.0
+  - seqtk=1.3
+  - multiqc=1.12
+  - matplotlib=3.5.0
+  - seaborn=0.11.2
+  - pandas=1.4.0
+  - numpy=1.21.0
+  - pip
+  - pip:
+    - boto3
+    - s3fs
+*/
+
+/*
+========================================================================================
+    Pipeline Execution Examples
+========================================================================================
+*/
+
+// run_examples.sh
+/*
+#!/bin/bash
+
+# Example 1: Basic run with samplesheet
+nextflow run main.nf \\
+  --input_samplesheet samplesheet.csv \\
+  --outdir s3://your-output-bucket/results \\
+  --genome GRCh38 \\
+  --fasta s3://your-reference-bucket/genome.fa \\
+  --bed_files s3://your-reference-bucket/panel1.bed,s3://your-reference-bucket/panel2.bed \\
+  -profile docker,aws \\
+  -resume
+
+# Example 2: Run with custom parameters
+nextflow run main.nf \\
+  --fastq_dir s3://your-data-bucket/fastq/ \\
+  --outdir s3://your-output-bucket/custom_run \\
+  --target_coverage 200 \\
+  --read_length 150 \\
+  --genome GRCh38 \\
+  --fasta s3://references/GRCh38.fa \\
+  --merged_bed s3://references/merged_targets.bed \\
+  -profile singularity,aws \\
+  -with-report execution_report.html \\
+  -with-timeline timeline.html \\
+  -with-dag flowchart.html
+
+# Example 3: Test run
+nextflow run main.nf \\
+  -profile test,docker \\
+  --outdir results_test
+
+# Example 4: Resume previous run
+nextflow run main.nf \\
+  --input_samplesheet samplesheet.csv \\
+  --outdir s3://your-output-bucket/results \\
+  -profile docker,aws \\
+  -resume last_run_work_dir
+
+# Example 5: Run with custom Java options for Picard
+nextflow run main.nf \\
+  --input_samplesheet samplesheet.csv \\
+  --outdir s3://your-output-bucket/results \\
+  --picard_java_options "-Xmx8g -XX:+UseG1GC" \\
+  -profile docker,aws
+*/
